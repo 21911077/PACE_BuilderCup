@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trend2Line</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--ink:#1d1d1b;--mute:#6b6b66;--line:#e4e3de;--go:#1f7a4d;--cond:#b26b00;--no:#b42318;--acc:#3b5bdb;--chip:#f0efe9}
+@media (prefers-color-scheme:dark){:root{--bg:#121211;--card:#1c1c1a;--ink:#ecebe6;--mute:#a3a29b;--line:#2e2d2a;--chip:#26251f}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+h1{margin:0;font-size:20px}header p{margin:0;color:var(--mute)}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+form{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;align-items:end}
+@media(max-width:760px){form{grid-template-columns:1fr}}
+label{font-size:13px;color:var(--mute);display:flex;flex-direction:column;gap:4px}
+input,select,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+button{background:var(--acc);color:#fff;border:0;cursor:pointer;font-weight:600}button:disabled{opacity:.6}
+.full{grid-column:1/-1}.banner{padding:8px 12px;border-radius:8px;background:#fff4e5;color:#7a4b00;margin-bottom:12px;font-size:14px}
+@media (prefers-color-scheme:dark){.banner{background:#3a2a10;color:#f3c77a}}
+.verdict{display:flex;gap:18px;align-items:center;flex-wrap:wrap}.big{font-size:30px;font-weight:800}
+.GO{color:var(--go)}.CONDITIONAL{color:var(--cond)}.NO-GO{color:var(--no)}
+.kpi{display:flex;flex-direction:column}.kpi b{font-size:20px}.kpi span{font-size:12px;color:var(--mute)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:760px){.grid2{grid-template-columns:1fr}}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;background:var(--chip);margin:2px;font-size:13px}
+.add{background:#e6f4ea;color:#14532d}.alg{background:#fde8e8;color:#7f1d1d}
+@media (prefers-color-scheme:dark){.add{background:#16351f;color:#a7e3b9}.alg{background:#3d1717;color:#f3b0b0}}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.wrap{overflow-x:auto}.bad{color:var(--no);font-weight:600}.ok{color:var(--go)}
+.gantt{position:relative}.row{display:flex;align-items:center;gap:8px;margin:4px 0}.row .name{width:190px;font-size:13px;flex:none}
+.track{flex:1;position:relative;height:16px;background:var(--chip);border-radius:4px}.bar{position:absolute;height:16px;border-radius:4px;background:#9aa7d8}.bar.crit{background:var(--acc)}
+.claim{padding:8px 0;border-bottom:1px solid var(--line)}.st{font-size:12px;font-weight:700;padding:1px 7px;border-radius:999px;margin-right:6px}
+.st.verified{background:#e6f4ea;color:#14532d}.st.failed{background:#fde8e8;color:#7f1d1d}.st.assumption{background:#fff4e5;color:#7a4b00}
+.mute{color:var(--mute);font-size:13px}svg{width:100%;height:auto}
+</style>
+</head>
+<body>
+<header><h1>Trend2Line</h1><p>From viral trend to a verified factory decision.</p></header>
+<main>
+  <div id="mode"></div>
+  <div class="card">
+    <form id="f">
+      <label>Trend name<input name="trend" value="Dubai chocolate" required></label>
+      <label>Our SKU<select name="sku_id" id="sku"></select></label>
+      <label>Run as of<input type="date" name="as_of" value="2025-03-01" required></label>
+      <label>Market<select name="market" id="market"></select></label>
+      <label class="full">Product photo (optional)<input type="file" name="image" accept="image/jpeg,image/png,image/webp"></label>
+      <button class="full" id="go">Run analysis</button>
+    </form>
+  </div>
+  <div id="out"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct = x => Math.round(x * 100) + "%";
+
+fetch("/api/config").then(r => r.json()).then(c => {
+  $("#sku").innerHTML = Object.entries(c.skus).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join("");
+  $("#market").innerHTML = c.markets.map(m => `<option>${esc(m)}</option>`).join("");
+  const notes = [];
+  if (c.mock) notes.push("MOCK MODE: synthetic trend curves and canned Gemini outputs. Set MOCK_LLM=0 for live runs.");
+  if (c.reference_status !== "computed") notes.push("Half-life reference is a placeholder; verdicts are capped at CONDITIONAL until it is computed.");
+  $("#mode").innerHTML = notes.map(n => `<div class="banner">${esc(n)}</div>`).join("");
+});
+
+$("#f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("#go"); btn.disabled = true; btn.textContent = "Running…";
+  $("#out").innerHTML = `<div class="card mute">Running trend scout, product deconstruction, feasibility, compliance, timeline and verification…</div>`;
+  try {
+    const fd = new FormData(e.target);
+    if (!fd.get("image") || !fd.get("image").size) fd.delete("image");
+    const r = await fetch("/api/run", {method: "POST", body: fd});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText);
+    render(j);
+  } catch (err) {
+    $("#out").innerHTML = `<div class="card bad">Error: ${esc(err.message)}</div>`;
+  } finally { btn.disabled = false; btn.textContent = "Run analysis"; }
+});
+
+function sparkline(pts) {
+  if (!pts.length) return "";
+  const w = 600, h = 140, max = Math.max(...pts.map(p => p[1])) || 1;
+  const xy = pts.map((p, i) => `${(i / (pts.length - 1)) * w},${h - (p[1] / max) * (h - 10)}`).join(" ");
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Interest over time"><polyline fill="none" stroke="var(--acc)" stroke-width="2" points="${xy}"/></svg>
+    <div class="mute">${esc(pts[0][0])} → ${esc(pts[pts.length - 1][0])} (weekly, 7-day smoothed)</div>`;
+}
+
+function gantt(route) {
+  const total = route.total_days || 1;
+  return `<div class="gantt">${route.tasks.map(t => `<div class="row"><div class="name">${esc(t.task.replace(/_/g, " "))} <span class="mute">${t.duration_days}d</span></div>
+    <div class="track"><div class="bar ${t.critical ? "crit" : ""}" style="left:${t.start_day / total * 100}%;width:${Math.max(t.duration_days / total * 100, 0.5)}%"></div></div></div>`).join("")}</div>`;
+}
+
+function render(j) {
+  const d = j.decision, v = j.verification, tr = j.trend, b = j.bom;
+  const chosen = j.routes.find(r => r.route === d.route);
+  const caught = j.attempts.length > 1 ? `Verifier rejected ${j.attempts[0].failed} claim(s) on draft 1; final draft passed.` : "First draft passed verification.";
+  $("#out").innerHTML = `
+  <div class="card verdict">
+    <div class="big ${esc(d.verdict)}">${esc(d.verdict)}</div>
+    <div class="kpi"><b>${esc(d.route.replace("_", " "))}${d.line ? " · " + esc(d.line) : ""}</b><span>Route</span></div>
+    <div class="kpi"><b>${chosen.total_days} days</b><span>Time to shelf</span></div>
+    <div class="kpi"><b>${pct(d.capture_median)}</b><span>Interest left at launch (range ${pct(chosen.capture.p25)}–${pct(chosen.capture.p75)})</span></div>
+    <div class="kpi"><b>${v ? v.trust : "–"}</b><span>Trust score</span></div>
+    <div class="mute" style="flex-basis:100%">${esc(caught)} ${d.downgrade_reasons.map(esc).join("; ")}</div>
+  </div>
+  ${j.allergen_blast_radius.length ? `<div class="card"><h2>Allergen blast radius</h2>${j.allergen_blast_radius.map(c =>
+    `<div class="bad">${esc(c.sku_name)} would lose its ${esc(c.claim.replace("_", "-"))} claim (${c.allergens.map(esc).join(", ")}).</div>`).join("")}</div>` : ""}
+  <div class="grid2">
+    <div class="card"><h2>Trend · ${esc(tr.article)}</h2>${sparkline(tr.series_weekly)}
+      <p>Stage <b>${esc(tr.stage)}</b> · momentum ${tr.momentum_90d} · class ${esc(tr.reference_class)} · source ${esc(tr.source)}</p></div>
+    <div class="card"><h2>Product delta vs ${esc(b.our_sku)}</h2>
+      <p>${esc(j.spec.product_name)} <span class="mute">(${esc(b.format_from)} → ${esc(b.format_to)})</span></p>
+      <div>${b.added_ingredients.map(i => `<span class="chip add">+ ${esc(i)}</span>`).join("")}</div>
+      <div>${b.new_allergens_vs_our_sku.map(a => `<span class="chip alg">${esc(a)}</span>`).join("")}</div>
+      ${b.unmapped_ingredients.length ? `<p class="bad">Unmapped: ${b.unmapped_ingredients.map(esc).join(", ")}</p>` : ""}</div>
+  </div>
+  <div class="card"><h2>Line feasibility</h2><div class="wrap"><table>
+    <tr><th>Line</th><th>Gaps (best option)</th><th>New allergens</th><th>Free-from conflicts</th><th>Lead days</th></tr>
+    ${j.lines.map(l => `<tr><td><b>${esc(l.line_id)}</b> ${esc(l.line_name)}</td>
+      <td>${l.gaps.map(g => esc(g.step) + (g.best_option ? ` → ${esc(g.best_option.option)} (${g.best_option.lead_time_days}d)` : ` → <span class="bad">no option</span>`)).join("<br>") || '<span class="ok">none</span>'}</td>
+      <td>${l.new_allergens_on_line.map(esc).join(", ") || "none"}</td>
+      <td>${l.free_from_conflicts.map(c => `<span class="bad">${esc(c.sku_id)}</span>`).join(", ") || "none"}</td>
+      <td>${l.gap_lead_days}</td></tr>`).join("")}
+  </table></div></div>
+  <div class="card"><h2>Timeline · ${esc(chosen.route.replace("_", " "))} · shelf ${esc(chosen.launch_date)}</h2>${gantt(chosen)}</div>
+  <div class="card"><h2>Compliance (${esc(j.compliance.market)})</h2>
+    <p>Declare: ${j.compliance.allergens_to_declare.map(a => `<span class="chip alg">${esc(a)}</span>`).join("") || "none"}</p>
+    ${j.compliance.triggered_rules.map(r => `<div class="claim"><b>${esc(r.rule_id)}</b> ${esc(r.requirement)} ${r.verified ? "" : '<span class="st assumption">source pending</span>'}</div>`).join("")}</div>
+  ${j.plan ? `<div class="card"><h2>Recommendation</h2><p><b>${esc(j.plan.headline)}</b></p><p>${esc(j.plan.rationale)}</p>
+    <ul>${j.plan.actions.map(a => `<li>${esc(a)}</li>`).join("")}</ul>
+    <h2 style="margin-top:14px">Claims and receipts</h2>
+    ${v.claims.map(c => `<div class="claim"><span class="st ${esc(c.status)}">${esc(c.status)}</span>${esc(c.text)}
+      <div class="mute">${esc(c.kind)} · ${(c.evidence_ids || []).map(esc).join(", ") || c.rule_id || c.line || "–"} · ${esc(c.reason)}</div></div>`).join("")}
+    ${v.orphans.map(o => `<div class="claim"><span class="st failed">orphan</span>${esc(o.text)}<div class="mute">${esc(o.reason)}</div></div>`).join("")}</div>` : ""}
+  ${j.attempts.filter(a => !a.passed).length ? `<div class="card"><h2>Caught by the verifier</h2>${j.attempts.filter(a => !a.passed).map(a =>
+    a.rejected.map(r => `<div class="claim"><span class="st failed">draft ${a.attempt}</span>${esc(r.text)}<div class="mute">${esc(r.reason)}</div></div>`).join("")).join("")}</div>` : ""}
+  <div class="card"><h2>Run log</h2>${j.steps.map(s => `<div class="mute">${s.t}s · <b>${esc(s.step)}</b> (${esc(s.kind)}) ${esc(s.detail)}</div>`).join("")}
+    <div class="mute">Mode ${esc(j.mode)} · LLM calls ${j.llm_calls} · cache hits ${j.cache_hits} · ${j.evidence.length} evidence items</div></div>`;
+}
+</script>
+</body>
+</html>

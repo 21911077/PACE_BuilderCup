@@ -1,0 +1,10 @@
+{
+  "status": "placeholder",
+  "note": "ILLUSTRATIVE values. Run scripts/build_fad_reference.py to compute these from real Wikimedia pageviews. Verdicts are capped at CONDITIONAL until status is 'computed'.",
+  "flash_rise_days_max": 21,
+  "classes": {
+    "flash": {"half_life_days": {"p25": 15, "median": 30, "p75": 45}},
+    "standard": {"half_life_days": {"p25": 45, "median": 120, "p75": 210}}
+  },
+  "fads": []
+}

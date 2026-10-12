@@ -1,0 +1,5 @@
+rule_id,market,trigger_type,trigger_value,requirement,source_url,verified
+IN-ALLERGEN-DECL,IN,allergen,*,Declare every allergen present in the product on the label.,TODO: add the exact FSSAI labelling regulation reference,false
+IN-FREEFROM-VOID,IN,free_from_conflict,*,A free-from claim must be withdrawn or revalidated when that allergen is introduced to the line.,TODO: add FSSAI claims regulation reference,false
+IN-NAME-ORIGIN,IN,name_term,dubai,Avoid geographic names that imply an origin the product does not have; prefer a descriptive name.,TODO: add reference,false
+SG-ALLERGEN-DECL,SG,allergen,*,Declare every allergen present in the product on the label.,TODO: add Singapore Food Regulations reference,false

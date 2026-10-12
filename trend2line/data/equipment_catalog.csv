@@ -1,0 +1,9 @@
+capability,option,lead_time_days,kind
+toasting,Buy pre-toasted kataifi from a supplier,21,outsource
+toasting,Install a batch toaster,42,equipment
+filling_depositing,Lease a filling depositor,56,equipment
+one_shot_depositing,Install a one-shot depositor,120,equipment
+shell_moulding,Add shell-moulding plates,35,equipment
+high_shear_mixing,Install a high-shear mixer,60,equipment
+oven,Install a tunnel oven,150,equipment
+fryer,Install a continuous fryer,120,equipment

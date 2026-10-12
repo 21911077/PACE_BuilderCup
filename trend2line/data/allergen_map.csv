@@ -1,0 +1,34 @@
+ingredient_id,display_name,allergens
+milk_chocolate,Milk chocolate (with soy lecithin),milk|soy
+dark_chocolate,Dark chocolate (with soy lecithin),soy
+white_chocolate,White chocolate (with soy lecithin),milk|soy
+cocoa_mass,Cocoa mass,
+cocoa_butter,Cocoa butter,
+cocoa_powder,Cocoa powder,
+sugar,Sugar,
+salt,Salt,
+vanilla,Vanilla,
+vegetable_fat,Vegetable fat,
+milk,Milk,milk
+milk_powder,Milk powder,milk
+butter,Butter,milk
+cream,Cream,milk
+caramel,Caramel (dairy),milk
+pistachio,Pistachio,tree_nuts
+pistachio_paste,Pistachio paste,tree_nuts
+almond,Almond,tree_nuts
+hazelnut,Hazelnut,tree_nuts
+hazelnut_paste,Hazelnut paste,tree_nuts
+cashew,Cashew,tree_nuts
+peanut,Peanut,peanut
+kataifi,Kataifi (shredded wheat pastry),wheat
+wheat_flour,Wheat flour,wheat
+wafer,Wafer,wheat
+tahini,Tahini,sesame
+sesame,Sesame seeds,sesame
+egg,Egg,egg
+soy_lecithin,Soy lecithin,soy
+instant_coffee,Instant coffee,
+coffee,Coffee,
+rice_crisp,Rice crisp,
+matcha,Matcha,

@@ -1,0 +1,42 @@
+# SYNTHETIC plant data for the demo. Schema mirrors an equipment master + allergen matrix.
+# In production this file is replaced by an ERP/MES connector; nothing else changes.
+company: "Demo Confections (synthetic)"
+lines:
+  L2:
+    name: "Moulding line 2"
+    capabilities: [tempering, solid_moulding, shell_moulding, cooling_tunnel, flow_wrap]
+    allergens_present: [milk, soy]
+    rate_kg_h: 400
+    skus:
+      CLASSIC-100: {name: "Classic Milk Chocolate 100 g", free_from: []}
+      KIDS-NF-40: {name: "Kids Nut-Free Bar 40 g", free_from: [nut_free]}
+  L3:
+    name: "One-shot depositing line 3"
+    capabilities: [tempering, one_shot_depositing, cooling_tunnel, flow_wrap]
+    allergens_present: [milk, soy, tree_nuts]
+    rate_kg_h: 300
+    skus:
+      ALMOND-90: {name: "Almond Crunch 90 g", free_from: []}
+  L4:
+    name: "Enrobing line 4"
+    capabilities: [tempering, enrobing, toasting, cooling_tunnel, flow_wrap]
+    allergens_present: [milk, soy, wheat]
+    rate_kg_h: 500
+    skus:
+      WAFER-35: {name: "Choco Wafer 35 g", free_from: []}
+      GF-BITES-25: {name: "Gluten-Free Choco Bites 25 g", free_from: [gluten_free]}
+
+# Our existing SKUs, described with canonical ingredient IDs (see allergen_map.csv)
+our_skus:
+  CLASSIC-100:
+    name: "Classic Milk Chocolate 100 g"
+    line: L2
+    format: solid_bar
+    ingredients: [milk_chocolate]
+    process_steps: [tempering, solid_moulding, cooling, demoulding, wrapping]
+  ALMOND-90:
+    name: "Almond Crunch 90 g"
+    line: L3
+    format: solid_bar
+    ingredients: [milk_chocolate, almond]
+    process_steps: [tempering, solid_moulding, cooling, demoulding, wrapping]

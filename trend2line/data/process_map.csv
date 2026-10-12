@@ -1,0 +1,15 @@
+process_step,required_any
+tempering,tempering
+solid_moulding,solid_moulding
+shell_moulding,shell_moulding|one_shot_depositing
+filling_deposit,one_shot_depositing|filling_depositing
+backing_off,shell_moulding|one_shot_depositing
+toasting,toasting
+cooling,cooling_tunnel
+demoulding,solid_moulding|shell_moulding|one_shot_depositing
+wrapping,flow_wrap
+enrobing,enrobing
+mixing,high_shear_mixing
+liquid_filling,liquid_filling
+baking,oven
+frying,fryer
