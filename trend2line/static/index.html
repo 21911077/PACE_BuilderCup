@@ -13,9 +13,10 @@ h1{margin:0;font-size:20px}header p{margin:0;color:var(--mute)}
 main{max-width:1100px;margin:0 auto;padding:20px 16px 60px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
 h2{font-size:15px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
-form{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;align-items:end}
+form{display:grid;grid-template-columns:2fr 1.4fr 1fr 1.4fr;gap:10px;align-items:end}
 @media(max-width:760px){form{grid-template-columns:1fr}}
-label{font-size:13px;color:var(--mute);display:flex;flex-direction:column;gap:4px}
+label{font-size:13px;color:var(--mute);display:flex;flex-direction:column;gap:4px;min-width:0}
+form>*{min-width:0}input:not([type=checkbox]),select{width:100%;min-width:0;text-overflow:ellipsis}
 input,select,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 button{background:var(--acc);color:#fff;border:0;cursor:pointer;font-weight:600}button:disabled{opacity:.6}
 .full{grid-column:1/-1}.banner{padding:8px 12px;border-radius:8px;background:#fff4e5;color:#7a4b00;margin-bottom:12px;font-size:14px}
@@ -34,6 +35,15 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 .claim{padding:8px 0;border-bottom:1px solid var(--line)}.st{font-size:12px;font-weight:700;padding:1px 7px;border-radius:999px;margin-right:6px}
 .st.verified{background:#e6f4ea;color:#14532d}.st.failed{background:#fde8e8;color:#7f1d1d}.st.assumption{background:#fff4e5;color:#7a4b00}
 .mute{color:var(--mute);font-size:13px}svg{width:100%;height:auto}
+.st.verified_official{background:#e6f4ea;color:#14532d}.st.verified_secondary{background:#e8eefc;color:#1e3a8a}.st.needs_review{background:#fff4e5;color:#7a4b00}
+.st.real_open_data{background:#e6f4ea;color:#14532d}.st.researched_regulation{background:#e8eefc;color:#1e3a8a}.st.sample_company_input,.st.company_input,.st.uploaded_company_input{background:#f0efe9;color:#4a4a45}
+.st.synthetic,.st.placeholder,.st.mock_llm,.st.mock_fallback{background:#fde8e8;color:#7f1d1d}.st.gemini{background:#e8eefc;color:#1e3a8a}
+@media (prefers-color-scheme:dark){.st.verified_secondary,.st.researched_regulation,.st.gemini{background:#1b2a4d;color:#b9c8f5}.st.needs_review{background:#3a2a10;color:#f3c77a}}
+.row2{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.small{font-size:13px}a{color:var(--acc)}
+tr.target td{background:var(--chip)}
+.track{overflow:visible}.deadline{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--no)}
+.deadline-key{display:inline-block;width:2px;height:12px;background:var(--no);vertical-align:middle;margin-right:4px}
+.deadline-kpi b{color:var(--no)}td.num{text-align:right;font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -42,11 +52,15 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
   <div id="mode"></div>
   <div class="card">
     <form id="f">
-      <label>Trend name<input name="trend" value="Dubai chocolate" required></label>
-      <label>Our SKU<select name="sku_id" id="sku"></select></label>
-      <label>Run as of<input type="date" name="as_of" value="2025-03-01" required></label>
-      <label>Market<select name="market" id="market"></select></label>
-      <label class="full">Product photo (optional)<input type="file" name="image" accept="image/jpeg,image/png,image/webp"></label>
+      <label>Trend name<input name="trend" id="trend" list="demos" placeholder="Any food trend, e.g. Croffle" required></label>
+      <datalist id="demos"></datalist>
+      <label>Compare against our SKU<select name="sku_id" id="sku"></select></label>
+      <label>Run as of<input type="date" name="as_of" id="as_of" required></label>
+      <label>Target market<select name="market" id="market"></select></label>
+      <label>Product photo (optional)<input type="file" name="image" accept="image/jpeg,image/png,image/webp"></label>
+      <label>Your plant file (optional, YAML)<input type="file" name="plant_file" id="plant_file" accept=".yaml,.yml,text/yaml"></label>
+      <label class="row2 small" style="flex-direction:row"><input type="checkbox" name="scan" value="true" checked> Scan all markets</label>
+      <div class="small mute" style="align-self:center"><a href="/api/plant/template">Download the plant template</a> · <a href="/api/provenance" target="_blank" rel="noopener">Data sources</a></div>
       <button class="full" id="go">Run analysis</button>
     </form>
   </div>
@@ -55,93 +69,185 @@ table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;p
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const pct = x => Math.round(x * 100) + "%";
+const pct = x => x == null ? "–" : Math.round(x * 100) + "%";
+const tag = a => esc(String(a).replace(/^[a-z]{2}:/, "").replace(/-/g, " "));
+const link = (url, text) => /^https?:\/\//.test(url || "") ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>` : esc(text);
+const big = n => n == null ? "–" : n >= 1e9 ? (n / 1e9).toFixed(2) + " bn" : n >= 1e6 ? (n / 1e6).toFixed(1) + " m" : Math.round(n).toLocaleString();
+const chip = (cls, text) => `<span class="st ${esc(cls)}">${esc(text ?? cls).replace(/_/g, " ")}</span>`;
+let CFG = null;
+
+function fillSkus(skus) {
+  $("#sku").innerHTML = Object.entries(skus).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join("");
+}
 
 fetch("/api/config").then(r => r.json()).then(c => {
-  $("#sku").innerHTML = Object.entries(c.skus).map(([k, v]) => `<option value="${esc(k)}">${esc(v)}</option>`).join("");
-  $("#market").innerHTML = c.markets.map(m => `<option>${esc(m)}</option>`).join("");
+  CFG = c;
+  fillSkus(c.skus);
+  $("#market").innerHTML = Object.entries(c.markets).map(([k, v]) =>
+    `<option value="${esc(k)}" ${k === c.home_market ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+  $("#demos").innerHTML = c.demo_trends.map(d => `<option value="${esc(d.trend)}">${esc(d.origin)}</option>`).join("");
+  $("#as_of").value = c.today;
+  $("#as_of").max = c.today;
   const notes = [];
-  if (c.mock) notes.push("MOCK MODE: synthetic trend curves and canned Gemini outputs. Set MOCK_LLM=0 for live runs.");
-  if (c.reference_status !== "computed") notes.push("Half-life reference is a placeholder; verdicts are capped at CONDITIONAL until it is computed.");
+  if (c.mode === "offline") notes.push("OFFLINE MODE: trend curves are synthetic test data, not real. Unset OFFLINE for live Wikipedia data.");
+  if (c.mode === "mock_llm") notes.push("MOCK GEMINI: trend data is live, but product specs and the write-up are canned. Set GOOGLE_API_KEY and GEMINI_MODEL for live Gemini.");
+  if (c.reference_status !== "computed") notes.push("Half-life reference is a placeholder; verdicts are capped at CONDITIONAL until it is computed (python -m scripts.build_fad_reference).");
   $("#mode").innerHTML = notes.map(n => `<div class="banner">${esc(n)}</div>`).join("");
+});
+
+$("#trend").addEventListener("change", e => {
+  const d = CFG && CFG.demo_trends.find(x => x.trend.toLowerCase() === e.target.value.toLowerCase());
+  if (d) { $("#as_of").value = d.suggested_as_of; $("#market").value = d.suggested_market; }
+});
+
+$("#plant_file").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) { fillSkus(CFG.skus); return; }
+  const fd = new FormData(); fd.append("plant_file", f);
+  const r = await fetch("/api/plant/validate", {method: "POST", body: fd});
+  const j = await r.json();
+  if (!r.ok) { $("#out").innerHTML = `<div class="card bad">Plant file rejected: ${esc(j.detail)}</div>`; e.target.value = ""; fillSkus(CFG.skus); return; }
+  fillSkus(j.skus);
+  $("#out").innerHTML = `<div class="card ok">Loaded ${esc(j.company || "your plant")}: ${Object.keys(j.lines).length} lines, ${Object.keys(j.skus).length} SKUs.</div>`;
 });
 
 $("#f").addEventListener("submit", async e => {
   e.preventDefault();
   const btn = $("#go"); btn.disabled = true; btn.textContent = "Running…";
-  $("#out").innerHTML = `<div class="card mute">Running trend scout, product deconstruction, feasibility, compliance, timeline and verification…</div>`;
+  $("#out").innerHTML = `<div class="card mute">Reading Wikipedia in each market's languages, resolving ingredients, checking lines, labelling rules and timelines…</div>`;
   try {
     const fd = new FormData(e.target);
-    if (!fd.get("image") || !fd.get("image").size) fd.delete("image");
+    for (const k of ["image", "plant_file"]) if (!fd.get(k) || !fd.get(k).size) fd.delete(k);
+    if (!fd.get("scan")) fd.set("scan", "false");
     const r = await fetch("/api/run", {method: "POST", body: fd});
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || r.statusText);
     render(j);
   } catch (err) {
-    $("#out").innerHTML = `<div class="card bad">Error: ${esc(err.message)}</div>`;
+    $("#out").innerHTML = `<div class="card bad">Could not finish the analysis: ${esc(err.message)}</div>`;
   } finally { btn.disabled = false; btn.textContent = "Run analysis"; }
 });
 
 function sparkline(pts) {
-  if (!pts.length) return "";
+  if (!pts || pts.length < 2) return "";
   const w = 600, h = 140, max = Math.max(...pts.map(p => p[1])) || 1;
   const xy = pts.map((p, i) => `${(i / (pts.length - 1)) * w},${h - (p[1] / max) * (h - 10)}`).join(" ");
   return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Interest over time"><polyline fill="none" stroke="var(--acc)" stroke-width="2" points="${xy}"/></svg>
-    <div class="mute">${esc(pts[0][0])} → ${esc(pts[pts.length - 1][0])} (weekly, 7-day smoothed)</div>`;
+    <div class="mute">${esc(pts[0][0])} to ${esc(pts[pts.length - 1][0])} (weekly, 7-day smoothed daily views)</div>`;
 }
 
-function gantt(route) {
-  const total = route.total_days || 1;
+function gantt(route, deadline) {
+  const total = Math.max(route.total_days, deadline || 0) || 1;
+  const marker = deadline ? `<div class="deadline" style="left:${deadline / total * 100}%" title="Shelf deadline"></div>` : "";
   return `<div class="gantt">${route.tasks.map(t => `<div class="row"><div class="name">${esc(t.task.replace(/_/g, " "))} <span class="mute">${t.duration_days}d</span></div>
-    <div class="track"><div class="bar ${t.critical ? "crit" : ""}" style="left:${t.start_day / total * 100}%;width:${Math.max(t.duration_days / total * 100, 0.5)}%"></div></div></div>`).join("")}</div>`;
+    <div class="track"><div class="bar ${t.critical ? "crit" : ""}" style="left:${t.start_day / total * 100}%;width:${Math.max(t.duration_days / total * 100, 0.5)}%"></div>${marker}</div></div>`).join("")}</div>
+    ${deadline ? `<p class="mute small"><span class="deadline-key"></span> Shelf deadline: day ${deadline}</p>` : ""}`;
+}
+
+function deadlineKpi(dl) {
+  if (!dl) return "";
+  if (dl.sustained) return `<div class="kpi deadline-kpi"><b>No deadline</b><span>Interest is sustained</span></div>`;
+  const g = dl.go_by_days, gd = dl.go_by_date;
+  return `<div class="kpi deadline-kpi"><b>On shelf by ${esc(gd.median)}</b>
+    <span>Within ${g.median} days to keep ${pct(dl.go_share)} of today's interest (${g.p25}–${g.p75} days across fad speeds; ${dl.conditional_by_days.median} days to keep ${pct(dl.conditional_share)})</span></div>`;
+}
+
+function slackLine(d) {
+  if (d.slack_days == null) return "";
+  const cls = d.slack_days >= 0 ? "ok" : "bad";
+  const msg = d.slack_days >= 0 ? `${d.slack_days} days to spare` : `${-d.slack_days} days too late`;
+  return `<div class="${cls}" style="flex-basis:100%">The planned route takes ${d.days_to_shelf} days against a ${d.deadline_go_days}-day deadline: ${msg}. The deadline comes from public data only, so check it against your own plant even if the plant data here is a sample.</div>`;
+}
+
+function blastRadius(list) {
+  if (!list.length) return "";
+  const by = {};
+  list.forEach(c => { (by[c.sku_id] = by[c.sku_id] || {name: c.sku_name, line: c.line_id, claims: []}).claims.push(`${c.claim_label} (${c.allergens.map(tag).join(", ")})`); });
+  return `<div class="card"><h2>Allergen blast radius</h2><p class="mute small">Existing products that would lose a free-from claim if this product ran on their line.</p>
+    ${Object.entries(by).map(([id, v]) => `<div class="bad">${esc(v.name)} on ${esc(v.line)}: loses ${v.claims.join("; ")}</div>`).join("")}</div>`;
+}
+
+function marketScan(rows, target) {
+  if (!rows || !rows.length) return "";
+  return `<div class="card"><h2>Market scan</h2>
+    <p class="mute small">Ranked with the weights in data/scoring.yaml. Interest comes from each market's own Wikipedia languages; markets read from English share one global signal, so their interest level is not scored.</p>
+    <div class="wrap"><table><tr><th>#</th><th>Market</th><th>Interest</th><th>Read from</th><th class="num">People</th><th class="num">GDP / person</th><th>Must declare</th><th>Label languages to add</th><th class="num">Shelf within</th><th class="num">Score</th></tr>
+    ${rows.map((r, i) => `<tr class="${r.market === target ? "target" : ""}"><td>${i + 1}</td><td><b>${esc(r.name)}</b><div class="mute small">${chip(r.allergen_source_status)}</div></td>
+      <td>${esc(r.signal.stage || "no data")}${r.signal.momentum_90d != null ? `<div class="mute small">momentum ${r.signal.momentum_90d}</div>` : ""}</td>
+      <td class="small">${esc((r.signal.languages_used || []).join(", ") || "–")}<div class="mute">${esc((r.signal.basis || "").replace(/_/g, " "))}</div></td>
+      <td class="num">${big(r.indicators.population)}</td><td class="num">${r.indicators.gdp_per_capita_usd ? "$" + Math.round(r.indicators.gdp_per_capita_usd).toLocaleString() : "–"}</td>
+      <td class="small">${r.mandatory_declarations.map(esc).join(", ") || "none"}${r.place_name_rule ? '<div class="bad">place name in product name</div>' : ""}</td>
+      <td class="small">${r.label_languages_needed.map(esc).join(", ") || "none"}</td><td class="num">${r.deadline_go_days == null ? "–" : r.deadline_go_days + " d"}</td><td class="num"><b>${r.score}</b></td></tr>`).join("")}
+    </table></div><p class="mute small">Population and GDP: World Bank (${esc((rows[0].indicators.indicator_years || []).join(", "))}).</p></div>`;
+}
+
+function compliance(c) {
+  const rows = (title, list, cls) => list.length ? `<p><b>${title}</b> ${list.map(d => `<span class="chip ${cls}">${esc(d.label)}${d.effective_from ? " from " + esc(d.effective_from) : ""}</span>`).join("")}</p>` : "";
+  return `<div class="card"><h2>Labelling in ${esc(c.market_name)}</h2>
+    <p class="small mute">${esc(c.regulator)} · allergen list: ${link(c.allergen_list_source.url, c.allergen_list_source.title)} ${chip(c.allergen_list_source.status)}</p>
+    ${rows("Must declare:", c.declarations, "alg")}${rows("Becomes mandatory later:", c.upcoming_declarations, "")}${rows("Recommended:", c.recommended_declarations, "")}
+    ${c.allergens_not_regulated_here.length ? `<p class="small">Present but not on this market's list: ${c.allergens_not_regulated_here.map(a => esc(a.label)).join(", ")}. Consider declaring voluntarily.</p>` : ""}
+    ${c.triggered_rules.map(r => `<div class="claim"><b>${esc(r.rule_id)}</b> ${chip(r.status)} ${esc(r.requirement)}
+      ${r.detail ? `<div class="mute small">Applies because: ${esc(r.detail)}</div>` : ""}<div class="mute small">Source: ${link(r.source_url, r.source_title)}</div></div>`).join("")}</div>`;
+}
+
+function ingredients(b) {
+  return `<div class="wrap"><table class="small"><tr><th>Ingredient</th><th>Matched to</th><th>Allergens</th></tr>
+    ${b.resolved_ingredients.map(r => `<tr><td>${esc(r.name)}</td><td>${r.labels.map(esc).join(", ") || '<span class="bad">not found</span>'} <span class="mute">(${esc(r.match.replace(/_/g, " "))})</span></td>
+      <td>${r.allergens.map(a => `<span class="chip alg">${tag(a)}</span>`).join("")}${(r.review_flags || []).map(a => `<span class="chip">check ${tag(a)}</span>`).join("")}</td></tr>`).join("")}
+  </table></div><p class="mute small">Resolved with the Open Food Facts ingredient taxonomy (ODbL).</p>`;
 }
 
 function render(j) {
-  const d = j.decision, v = j.verification, tr = j.trend, b = j.bom;
+  const d = j.decision, v = j.verification, tr = j.trend, b = j.bom, c = j.compliance;
   const chosen = j.routes.find(r => r.route === d.route);
-  const caught = j.attempts.length > 1 ? `Verifier rejected ${j.attempts[0].failed} claim(s) on draft 1; final draft passed.` : "First draft passed verification.";
+  const caught = j.attempts.length > 1 ? `Verifier rejected ${j.attempts[0].failed} claim(s) on draft 1; final draft ${j.attempts[j.attempts.length - 1].passed ? "passed" : "still failed"}.` : "First draft passed verification.";
   $("#out").innerHTML = `
   <div class="card verdict">
     <div class="big ${esc(d.verdict)}">${esc(d.verdict)}</div>
+    ${deadlineKpi(j.shelf_deadline)}
+    <div class="kpi"><b>${esc(c.market_name)}</b><span>Target market</span></div>
     <div class="kpi"><b>${esc(d.route.replace("_", " "))}${d.line ? " · " + esc(d.line) : ""}</b><span>Route</span></div>
-    <div class="kpi"><b>${chosen.total_days} days</b><span>Time to shelf</span></div>
+    <div class="kpi"><b>${chosen.total_days} days</b><span>Time to shelf (${esc(chosen.launch_date)})</span></div>
     <div class="kpi"><b>${pct(d.capture_median)}</b><span>Interest left at launch (range ${pct(chosen.capture.p25)}–${pct(chosen.capture.p75)})</span></div>
     <div class="kpi"><b>${v ? v.trust : "–"}</b><span>Trust score</span></div>
-    <div class="mute" style="flex-basis:100%">${esc(caught)} ${d.downgrade_reasons.map(esc).join("; ")}</div>
+    ${slackLine(d)}
+    ${d.faster_line_blocked ? `<div class="bad" style="flex-basis:100%">Line ${esc(d.faster_line_blocked.line)} could reach shelf in ${d.faster_line_blocked.total_days} days, but it would void: ${d.faster_line_blocked.blocked_by.map(esc).join("; ")}.</div>` : ""}
+    <div class="mute" style="flex-basis:100%">${esc(caught)}${d.downgrade_reasons.length ? " Caveats: " + d.downgrade_reasons.map(esc).join("; ") + "." : ""}</div>
   </div>
-  ${j.allergen_blast_radius.length ? `<div class="card"><h2>Allergen blast radius</h2>${j.allergen_blast_radius.map(c =>
-    `<div class="bad">${esc(c.sku_name)} would lose its ${esc(c.claim.replace("_", "-"))} claim (${c.allergens.map(esc).join(", ")}).</div>`).join("")}</div>` : ""}
+  ${blastRadius(j.allergen_blast_radius)}
   <div class="grid2">
-    <div class="card"><h2>Trend · ${esc(tr.article)}</h2>${sparkline(tr.series_weekly)}
-      <p>Stage <b>${esc(tr.stage)}</b> · momentum ${tr.momentum_90d} · class ${esc(tr.reference_class)} · source ${esc(tr.source)}</p></div>
-    <div class="card"><h2>Product delta vs ${esc(b.our_sku)}</h2>
-      <p>${esc(j.spec.product_name)} <span class="mute">(${esc(b.format_from)} → ${esc(b.format_to)})</span></p>
-      <div>${b.added_ingredients.map(i => `<span class="chip add">+ ${esc(i)}</span>`).join("")}</div>
-      <div>${b.new_allergens_vs_our_sku.map(a => `<span class="chip alg">${esc(a)}</span>`).join("")}</div>
-      ${b.unmapped_ingredients.length ? `<p class="bad">Unmapped: ${b.unmapped_ingredients.map(esc).join(", ")}</p>` : ""}</div>
+    <div class="card"><h2>Interest · ${esc(tr.article)}</h2>${sparkline(tr.series_weekly)}
+      <p>Stage <b>${esc(tr.stage)}</b> · momentum ${tr.momentum_90d} · ${esc(tr.reference_class)} fad</p>
+      <p class="small mute">Read from ${esc((tr.languages_used || []).join(", "))} Wikipedia (${esc((tr.basis || "").replace(/_/g, " "))}). Article exists in ${tr.editions_available.length} languages. ${esc(tr.source)}</p></div>
+    <div class="card"><h2>Product vs ${esc(b.our_sku)}</h2>
+      <p>${esc(j.spec.product_name)} <span class="mute">(${esc(b.format_from)} to ${esc(b.format_to)})</span></p>
+      ${ingredients(b)}
+      ${b.new_allergens_vs_our_sku.length ? `<p class="small">New allergens vs our SKU: ${b.new_allergens_vs_our_sku.map(a => `<span class="chip alg">${tag(a)}</span>`).join("")}</p>` : ""}</div>
   </div>
+  ${compliance(c)}
+  ${marketScan(j.market_scan, c.market)}
   <div class="card"><h2>Line feasibility</h2><div class="wrap"><table>
-    <tr><th>Line</th><th>Gaps (best option)</th><th>New allergens</th><th>Free-from conflicts</th><th>Lead days</th></tr>
+    <tr><th>Line</th><th>Gaps (best option)</th><th>New allergens</th><th>Free-from conflicts</th><th class="num">Lead days</th></tr>
     ${j.lines.map(l => `<tr><td><b>${esc(l.line_id)}</b> ${esc(l.line_name)}</td>
-      <td>${l.gaps.map(g => esc(g.step) + (g.best_option ? ` → ${esc(g.best_option.option)} (${g.best_option.lead_time_days}d)` : ` → <span class="bad">no option</span>`)).join("<br>") || '<span class="ok">none</span>'}</td>
-      <td>${l.new_allergens_on_line.map(esc).join(", ") || "none"}</td>
-      <td>${l.free_from_conflicts.map(c => `<span class="bad">${esc(c.sku_id)}</span>`).join(", ") || "none"}</td>
-      <td>${l.gap_lead_days}</td></tr>`).join("")}
+      <td>${l.gaps.map(g => esc(g.step.replace(/_/g, " ")) + (g.best_option ? `: ${esc(g.best_option.option)} (${g.best_option.lead_time_days}d)` : `: <span class="bad">no option</span>`)).join("<br>") || '<span class="ok">none</span>'}</td>
+      <td>${l.new_allergens_on_line.map(tag).join(", ") || "none"}</td>
+      <td>${[...new Set(l.free_from_conflicts.map(x => x.sku_id))].map(x => `<span class="bad">${esc(x)}</span>`).join(", ") || "none"}</td>
+      <td class="num">${l.gap_lead_days}</td></tr>`).join("")}
   </table></div></div>
-  <div class="card"><h2>Timeline · ${esc(chosen.route.replace("_", " "))} · shelf ${esc(chosen.launch_date)}</h2>${gantt(chosen)}</div>
-  <div class="card"><h2>Compliance (${esc(j.compliance.market)})</h2>
-    <p>Declare: ${j.compliance.allergens_to_declare.map(a => `<span class="chip alg">${esc(a)}</span>`).join("") || "none"}</p>
-    ${j.compliance.triggered_rules.map(r => `<div class="claim"><b>${esc(r.rule_id)}</b> ${esc(r.requirement)} ${r.verified ? "" : '<span class="st assumption">source pending</span>'}</div>`).join("")}</div>
+  <div class="card"><h2>Timeline · ${esc(chosen.route.replace("_", " "))} · shelf ${esc(chosen.launch_date)}</h2>${gantt(chosen, j.decision.deadline_go_days)}</div>
   ${j.plan ? `<div class="card"><h2>Recommendation</h2><p><b>${esc(j.plan.headline)}</b></p><p>${esc(j.plan.rationale)}</p>
     <ul>${j.plan.actions.map(a => `<li>${esc(a)}</li>`).join("")}</ul>
     <h2 style="margin-top:14px">Claims and receipts</h2>
-    ${v.claims.map(c => `<div class="claim"><span class="st ${esc(c.status)}">${esc(c.status)}</span>${esc(c.text)}
-      <div class="mute">${esc(c.kind)} · ${(c.evidence_ids || []).map(esc).join(", ") || c.rule_id || c.line || "–"} · ${esc(c.reason)}</div></div>`).join("")}
+    ${v.claims.map(x => `<div class="claim"><span class="st ${esc(x.status)}">${esc(x.status)}</span>${esc(x.text)}
+      <div class="mute">${esc(x.kind)} · ${(x.evidence_ids || []).map(esc).join(", ") || esc(x.rule_id || x.line || "–")} · ${esc(x.reason)}</div></div>`).join("")}
     ${v.orphans.map(o => `<div class="claim"><span class="st failed">orphan</span>${esc(o.text)}<div class="mute">${esc(o.reason)}</div></div>`).join("")}</div>` : ""}
   ${j.attempts.filter(a => !a.passed).length ? `<div class="card"><h2>Caught by the verifier</h2>${j.attempts.filter(a => !a.passed).map(a =>
     a.rejected.map(r => `<div class="claim"><span class="st failed">draft ${a.attempt}</span>${esc(r.text)}<div class="mute">${esc(r.reason)}</div></div>`).join("")).join("")}</div>` : ""}
+  <div class="card"><h2>Where every input came from</h2><div class="wrap"><table class="small"><tr><th>Input</th><th>Status</th><th>Detail</th></tr>
+    ${j.provenance.map(p => `<tr><td>${esc(p.input)}</td><td>${chip(p.status)}</td><td>${esc(p.detail)}</td></tr>`).join("")}</table></div></div>
   <div class="card"><h2>Run log</h2>${j.steps.map(s => `<div class="mute">${s.t}s · <b>${esc(s.step)}</b> (${esc(s.kind)}) ${esc(s.detail)}</div>`).join("")}
-    <div class="mute">Mode ${esc(j.mode)} · LLM calls ${j.llm_calls} · cache hits ${j.cache_hits} · ${j.evidence.length} evidence items</div></div>`;
+    <div class="mute">Mode ${esc(j.mode)} · LLM calls ${j.llm_calls} · cache hits ${j.cache_hits} · web requests ${j.http_requests} · ${j.evidence.length} evidence items</div></div>`;
 }
 </script>
 </body>

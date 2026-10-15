@@ -31,13 +31,17 @@ class LLM:
         if self._client is None:
             from google import genai  # imported lazily so mock mode needs no credentials
 
-            if self.s.use_vertex:
-                self._client = genai.Client(
-                    vertexai=True, project=self.s.gcp_project, location=self.s.gcp_location
-                )
+            auth = self.s.resolved_auth
+            if auth == "vertex_express":
+                # Vertex AI express-mode keys ("AQ....") go to Vertex, not AI Studio
+                self._client = genai.Client(vertexai=True, api_key=self.s.google_api_key)
+            elif auth == "vertex_adc":
+                if not self.s.gcp_project:
+                    raise LLMError("No GOOGLE_API_KEY and no GOOGLE_CLOUD_PROJECT for Vertex AI (ADC).")
+                self._client = genai.Client(vertexai=True, project=self.s.gcp_project, location=self.s.gcp_location)
             else:
                 if not self.s.google_api_key:
-                    raise LLMError("GOOGLE_API_KEY is not set (or set USE_VERTEX=1 to use ADC).")
+                    raise LLMError("GOOGLE_API_KEY is not set.")
                 self._client = genai.Client(api_key=self.s.google_api_key)
         return self._client
 
@@ -65,7 +69,7 @@ class LLM:
             return schema.model_validate(handler(prompt, mock_context or {}))
 
         if not self.s.gemini_model:
-            raise LLMError("GEMINI_MODEL is not set. Copy the current Flash model ID from AI Studio.")
+            raise LLMError("GEMINI_MODEL is not set. Run `python -m scripts.smoke_gemini` to list available models.")
 
         path = self.s.cache_dir / f"{self._key(task, prompt, schema, image)}.json"
         if path.exists():

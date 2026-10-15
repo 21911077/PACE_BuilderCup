@@ -1,48 +1,102 @@
-"""Trend Scout: Wikipedia pageviews as a public demand proxy. All math is deterministic."""
+"""Trend Scout: Wikipedia pageviews per language edition as a public, regional demand proxy.
+
+One article is followed across languages through Wikidata sitelinks (en 'Dubai chocolate' -> ja, ar, de ...),
+so each market is read from its own-language edition. All maths is deterministic.
+Network calls are cached on disk (HTTP_CACHE_HOURS) and never made when OFFLINE=1.
+"""
+from __future__ import annotations
+
 import datetime as dt
+import hashlib
+import json
 import math
+import time
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 
-WIKI_API = "https://en.wikipedia.org/w/api.php"
-PAGEVIEWS = (
-    "https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/"
-    "all-access/user/{title}/daily/{start}/{end}"
-)
+WIKI_API = "https://{lang}.wikipedia.org/w/api.php"
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+PAGEVIEWS = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/{lang}.wikipedia/"
+             "all-access/user/{title}/daily/{start}/{end}")
 Series = list[tuple[dt.date, int]]
 
 
-def search_candidates(query: str, user_agent: str, limit: int = 5) -> list[str]:
-    r = httpx.get(
-        WIKI_API,
-        params={"action": "opensearch", "search": query, "limit": limit, "namespace": 0, "format": "json"},
-        headers={"User-Agent": user_agent},
-        timeout=10,
-    )
-    r.raise_for_status()
-    return list(r.json()[1])
+class Http:
+    """Tiny GET-JSON helper with a disk cache, so repeated demo runs are fast and polite to Wikimedia."""
+
+    def __init__(self, user_agent: str, cache_dir: Path | None = None, ttl_hours: float = 12):
+        self.ua, self.ttl = user_agent, ttl_hours * 3600
+        self.dir = (cache_dir / "http") if cache_dir else None
+        if self.dir:
+            self.dir.mkdir(parents=True, exist_ok=True)
+        self.requests = 0
+
+    def get(self, url: str, params: dict | None = None, allow_404: bool = False):
+        key = hashlib.sha256((url + json.dumps(params or {}, sort_keys=True)).encode()).hexdigest()[:32]
+        path = self.dir / f"{key}.json" if self.dir else None
+        if path and path.exists() and time.time() - path.stat().st_mtime < self.ttl:
+            return json.loads(path.read_text())
+        r = httpx.get(url, params=params, headers={"User-Agent": self.ua}, timeout=20)
+        self.requests += 1
+        if r.status_code == 404 and allow_404:
+            data = None
+        else:
+            r.raise_for_status()
+            data = r.json()
+        if path:
+            path.write_text(json.dumps(data))
+        return data
 
 
-def fetch_pageviews(title: str, start: dt.date, end: dt.date, user_agent: str) -> Series:
-    url = PAGEVIEWS.format(
-        title=quote(title.replace(" ", "_"), safe=""),
-        start=start.strftime("%Y%m%d"),
-        end=end.strftime("%Y%m%d"),
-    )
-    r = httpx.get(url, headers={"User-Agent": user_agent}, timeout=15)
-    if r.status_code == 404:
+def search_candidates(http: Http, query: str, lang: str = "en", limit: int = 5) -> list[str]:
+    data = http.get(WIKI_API.format(lang=lang), {"action": "opensearch", "search": query, "limit": limit,
+                                                  "namespace": 0, "format": "json"})
+    return list(data[1]) if data else []
+
+
+def wikidata_qid(http: Http, title: str, lang: str = "en") -> str | None:
+    data = http.get(WIKI_API.format(lang=lang), {"action": "query", "prop": "pageprops", "ppprop": "wikibase_item",
+                                                  "redirects": 1, "titles": title, "format": "json"})
+    for page in (data or {}).get("query", {}).get("pages", {}).values():
+        if qid := page.get("pageprops", {}).get("wikibase_item"):
+            return qid
+    return None
+
+
+def sitelinks(http: Http, qid: str) -> dict[str, str]:
+    """{language code: article title} for every Wikipedia edition that has the article."""
+    data = http.get(WIKIDATA_API, {"action": "wbgetentities", "ids": qid, "props": "sitelinks", "format": "json"})
+    links = (data or {}).get("entities", {}).get(qid, {}).get("sitelinks", {})
+    out = {}
+    for site, v in links.items():
+        if site.endswith("wiki") and site not in ("commonswiki", "specieswiki", "metawiki", "wikidatawiki"):
+            out[site[:-4].replace("_", "-")] = v["title"]
+    return out
+
+
+def fetch_pageviews(http: Http, title: str, start: dt.date, end: dt.date, lang: str = "en") -> Series:
+    url = PAGEVIEWS.format(lang=lang, title=quote(title.replace(" ", "_"), safe=""),
+                           start=start.strftime("%Y%m%d"), end=end.strftime("%Y%m%d"))
+    data = http.get(url, allow_404=True)
+    if not data:
         return []
-    r.raise_for_status()
-    return [
-        (dt.datetime.strptime(i["timestamp"][:8], "%Y%m%d").date(), int(i["views"]))
-        for i in r.json().get("items", [])
-    ]
+    return [(dt.datetime.strptime(i["timestamp"][:8], "%Y%m%d").date(), int(i["views"])) for i in data.get("items", [])]
+
+
+def combine(series_list: list[Series]) -> Series:
+    """Sum several daily series by date (missing days count as zero)."""
+    acc: dict[dt.date, int] = {}
+    for s in series_list:
+        for d, v in s:
+            acc[d] = acc.get(d, 0) + v
+    return sorted(acc.items())
 
 
 def synthetic_series(start: dt.date, end: dt.date, peak: dt.date, rise_days: int,
                      half_life: int, peak_views: int = 20000, baseline: int = 40) -> Series:
-    """Clearly synthetic curve for MOCK_LLM mode only. Never presented as real data."""
+    """Clearly synthetic curve for OFFLINE mode only. Never presented as real data."""
     out, d = [], start
     while d <= end:
         delta = (d - peak).days
@@ -53,6 +107,15 @@ def synthetic_series(start: dt.date, end: dt.date, peak: dt.date, rise_days: int
         out.append((d, int(v)))
         d += dt.timedelta(days=1)
     return out
+
+
+def offline_series(trend: str, lang: str, as_of: dt.date, peak: dt.date | None = None) -> Series:
+    """Deterministic synthetic curve per (trend, language) so offline tests are stable."""
+    h = int(hashlib.sha256(f"{trend.lower()}|{lang}".encode()).hexdigest(), 16)
+    peak = peak or (as_of - dt.timedelta(days=10 + h % 50))
+    scale = 0.2 + (h % 80) / 100 if lang != "en" else 1.0
+    return synthetic_series(as_of - dt.timedelta(days=3 * 365), as_of, peak, rise_days=10 + h % 15,
+                            half_life=20 + h % 90, peak_views=int(20000 * scale))
 
 
 def rolling_mean(values: list[float], window: int) -> list[float]:
@@ -70,9 +133,37 @@ def capture_share(days_to_shelf: float, half_life_days: float) -> float:
     return round(0.5 ** (days_to_shelf / half_life_days), 3)
 
 
-def analyze(series: Series, as_of: dt.date, reference: dict, smooth_window: int = 7) -> dict:
+def days_until_share(share: float, half_life_days: float) -> int:
+    """Inverse of capture_share: the last whole day on which at least `share` of today's interest is left.
+    Solves 0.5 ** (T / h) = share  ->  T = h * log2(1 / share). Rounded down, so the deadline is never late."""
+    if not 0 < share < 1:
+        raise ValueError("share must be between 0 and 1")
+    return int(math.floor(half_life_days * math.log2(1 / share)))
+
+
+def shelf_deadline(half_life: dict, as_of: dt.date, go_share: float, conditional_share: float,
+                   sustained: bool) -> dict:
+    """'Must be on shelf within N days', from public data only (no company data needed).
+
+    For each half-life scenario (p25 = fast-fading fad, median, p75 = slow fade), the number of days from the
+    run date until interest drops below the GO share and the CONDITIONAL share. A sustained trend has no deadline.
+    """
+    out = {"sustained": sustained, "go_share": go_share, "conditional_share": conditional_share,
+           "method": "T = half_life * log2(1 / share); half-lives from data/fad_reference.json"}
+    for name, share in (("go", go_share), ("conditional", conditional_share)):
+        if sustained:
+            out[f"{name}_by_days"] = None
+            out[f"{name}_by_date"] = None
+            continue
+        days = {k: days_until_share(share, v) for k, v in half_life.items()}
+        out[f"{name}_by_days"] = days
+        out[f"{name}_by_date"] = {k: (as_of + dt.timedelta(days=d)).isoformat() for k, d in days.items()}
+    return out
+
+
+def analyze(series: Series, as_of: dt.date, reference: dict, smooth_window: int = 7, min_points: int = 120) -> dict:
     pts = [(d, v) for d, v in series if d <= as_of]
-    if len(pts) < 120:
+    if len(pts) < min_points or sum(v for _, v in pts) == 0:
         return {"stage": "insufficient_data", "points": len(pts)}
     dates = [d for d, _ in pts]
     sm = rolling_mean([float(v) for _, v in pts], smooth_window)
@@ -116,7 +207,7 @@ def analyze(series: Series, as_of: dt.date, reference: dict, smooth_window: int 
         "rise_days": rise_days,
         "observed_half_life_days": observed_half_life,
         "reference_class": cls,
-        "reference_half_life_days": hl,
+        "reference_half_life_days": {k: v for k, v in hl.items()},
         "reference_status": reference.get("status", "unknown"),
         "series_weekly": weekly,
     }

@@ -1,42 +1,33 @@
-"""MOCK_LLM=1 handlers. Lets the team deploy and demo the full flow before an API key exists.
+"""MOCK_LLM=1 handlers: canned Gemini outputs so the team can demo without a key.
 
-The mock writer deliberately makes mistakes on attempt 1 so the verifier loop is visible offline.
-Everything produced here is labelled 'mock' in the API response and the UI.
+Specs come from data/demo_trends.yaml. For a trend not in that file, a deterministic fallback builds a
+minimal spec from ingredient words found in the trend name (clearly labelled). The mock writer deliberately
+makes mistakes on attempt 1 so the verifier loop is visible offline. Everything is labelled 'mock'.
 """
+from .stages import catalog
+from .stages.ingredients import taxonomy
 
-DUBAI_SPEC = {
-    "product_name": "Milk chocolate bar with pistachio cream and toasted kataifi",
-    "format": "shell_and_fill",
-    "ingredients": [
-        {"name": "milk chocolate", "ingredient_id": "milk_chocolate", "role": "shell"},
-        {"name": "pistachio paste", "ingredient_id": "pistachio_paste", "role": "filling"},
-        {"name": "sugar", "ingredient_id": "sugar", "role": "filling"},
-        {"name": "vegetable fat", "ingredient_id": "vegetable_fat", "role": "filling"},
-        {"name": "milk powder", "ingredient_id": "milk_powder", "role": "filling"},
-        {"name": "kataifi pastry", "ingredient_id": "kataifi", "role": "inclusion"},
-        {"name": "butter", "ingredient_id": "butter", "role": "inclusion"},
-        {"name": "tahini", "ingredient_id": "tahini", "role": "filling"},
-    ],
-    "process_steps": ["tempering", "shell_moulding", "toasting", "filling_deposit",
-                      "backing_off", "cooling", "demoulding", "wrapping"],
-    "notes": "MOCK spec.",
-}
 
-DALGONA_SPEC = {
-    "product_name": "Ready-to-drink whipped coffee",
-    "format": "beverage",
-    "ingredients": [
-        {"name": "instant coffee", "ingredient_id": "instant_coffee", "role": "base"},
-        {"name": "sugar", "ingredient_id": "sugar", "role": "base"},
-        {"name": "milk", "ingredient_id": "milk", "role": "base"},
-    ],
-    "process_steps": ["mixing", "liquid_filling", "cooling"],
-    "notes": "MOCK spec.",
-}
+def _demo(trend: str) -> dict | None:
+    t = trend.strip().lower()
+    return next((d for d in catalog.demo_trends() if d["trend"].lower() == t), None)
 
 
 def deconstruct(prompt: str, ctx: dict) -> dict:
-    return DALGONA_SPEC if "dalgona" in ctx.get("trend", "").lower() else DUBAI_SPEC
+    trend = ctx.get("trend", "")
+    if d := _demo(trend):
+        return {**d["spec"], "notes": "MOCK spec from data/demo_trends.yaml."}
+    spans = taxonomy().spans(trend)
+    return {
+        "product_name": trend,
+        "category": "other",
+        "format": "other",
+        "hero_ingredient": spans[0][0] if spans else trend,
+        "ingredients": [{"name": s, "role": "base", "components": []} for s, _ in spans] or
+                       [{"name": trend, "role": "base", "components": []}],
+        "process_steps": [],
+        "notes": "MOCK fallback: ingredients guessed from words in the trend name; set a Gemini key for a real spec.",
+    }
 
 
 def pick_article(prompt: str, ctx: dict) -> dict:
@@ -57,27 +48,37 @@ def write_plan(prompt: str, ctx: dict) -> dict:
          "evidence_ids": [tl_id], "field": "total_days", "value": tl["total_days"]},
         {"text": f"Earliest shelf date is {tl['launch_date']}.", "kind": "date",
          "evidence_ids": [tl_id], "field": "launch_date", "date_value": tl["launch_date"]},
-        {"text": "Consumers may prefer a thinner shell.", "kind": "speculative"},
+        {"text": "Consumers may prefer a smaller pack size at first.", "kind": "speculative"},
     ]
+    dl = reg.get(idx["deadline"])["payload"]
+    if dl["go_by_days"]:
+        claims.append({"text": f"To keep half of today's interest the product must be on shelf within "
+                               f"{dl['go_by_days']['median']} days.", "kind": "numeric", "evidence_ids": [idx["deadline"]],
+                       "field": "go_by_days.median", "value": dl["go_by_days"]["median"]})
+        claims.append({"text": f"Shelf deadline {dl['go_by_date']['median']}.", "kind": "date",
+                       "evidence_ids": [idx["deadline"]], "field": "go_by_date.median",
+                       "date_value": dl["go_by_date"]["median"]})
     comp = reg.get(idx["compliance"])["payload"]
     if comp["triggered_rule_ids"]:
-        claims.append({"text": "All allergens must be declared on pack.", "kind": "regulatory",
+        claims.append({"text": "Allergen and labelling rules for this market apply.", "kind": "regulatory",
                        "rule_id": comp["triggered_rule_ids"][0]})
     if d["line"]:
         line = plant["lines"][d["line"]]
         cap_name = line["capabilities"][0]
         claims.append({"text": f"{d['line']} has {cap_name}.", "kind": "process",
                        "line": d["line"], "capability": cap_name, "capability_present": True})
-    rationale = (f"{d['verdict']} via {d['route'].replace('_', ' ')}: about {round(cap * 100)}% of current "
-                 f"interest remains after {tl['total_days']} days to shelf.")
+    rationale = (f"{d['verdict']} for {comp['market_name']} via {d['route'].replace('_', ' ')}: about "
+                 f"{round(cap * 100)}% of current interest remains after {tl['total_days']} days to shelf.")
+    if dl["go_by_days"]:
+        rationale += f" The product must be on shelf within {dl['go_by_days']['median']} days to keep half of it."
     if attempt == 1:  # deliberate errors so the verifier has something to catch offline
         wrong_line = next((lid for lid, ln in plant["lines"].items()
                            if "one_shot_depositing" not in ln["capabilities"]), None)
         if wrong_line:
             claims.append({"text": f"{wrong_line} can deposit filled bars.", "kind": "process",
                            "line": wrong_line, "capability": "one_shot_depositing", "capability_present": True})
-        rationale += " Pistachio prices rose 60% this year."
-    return {"headline": f"{d['verdict']}: {state['trend']}", "rationale": rationale,
+        rationale += " Ingredient prices rose 60% this year."
+    return {"headline": f"{d['verdict']}: {state['trend']} in {comp['market_name']}", "rationale": rationale,
             "actions": [f"Lock the route: {d['route'].replace('_', ' ')}.", "Start artwork in parallel with trials."],
             "claims": claims}
 

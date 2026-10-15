@@ -26,7 +26,7 @@ def assess_trend(trend: str, sku_id: str = "CLASSIC-100", as_of: str = "", marke
         trend: Trend name, e.g. "Dubai chocolate".
         sku_id: Our existing SKU to compare against.
         as_of: Run date YYYY-MM-DD (defaults to today).
-        market: Labelling market code, e.g. "IN".
+        market: Market code from data/markets.yaml, e.g. "IN", "EU", "GCC", "JP".
     """
     s = get_settings()
     day = dt.date.fromisoformat(as_of) if as_of else dt.date.today()

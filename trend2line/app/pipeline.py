@@ -6,106 +6,158 @@ from . import prompts
 from .config import Settings
 from .evidence import EvidenceRegistry
 from .llm import LLM
-from typing import get_args
-
-from .models import ArticleChoice, Plan, ProcessStep, ProductSpec
+from .models import ArticleChoice, Plan, ProductSpec
 from .stages import bom as bom_stage
-from .stages import catalog, compliance as compliance_stage, feasibility, timeline, trend as trend_stage
+from .stages import catalog, compliance as compliance_stage, feasibility, signals, timeline
+from .stages import trend as trend_stage
 from .stages.verifier import feedback_for_writer, verify
-STEP_VOCAB = list(get_args(ProcessStep))
-
 
 class PipelineError(ValueError):
     pass
 
 
-def _mock_curve(trend: str, as_of: dt.date) -> trend_stage.Series:
-    start = as_of - dt.timedelta(days=3 * 365)
-    if "dalgona" in trend.lower():
-        return trend_stage.synthetic_series(start, as_of, dt.date(2020, 3, 28), 10, 20)
-    return trend_stage.synthetic_series(start, as_of, as_of - dt.timedelta(days=20), 150, 90)
+def _resolve_article(trend: str, market_langs: list[str], http: trend_stage.Http, llm: LLM, log) -> tuple[str, str, dict]:
+    """Find the article (English first, else the market's own languages) and all its language editions."""
+    for lang in ["en"] + [lg for lg in market_langs if lg != "en"]:
+        try:
+            candidates = trend_stage.search_candidates(http, trend, lang)
+        except Exception as exc:
+            raise PipelineError(f"Wikipedia search failed: {exc}") from exc
+        if not candidates:
+            continue
+        title = candidates[0]
+        if len(candidates) > 1:
+            choice = llm.structured("pick_article", prompts.pick_article(trend, candidates), ArticleChoice,
+                                    mock_context={"title": candidates[0]})
+            title = choice.title if choice.title in candidates else candidates[0]
+            log("Trend Scout", f"Gemini chose '{title}' from {len(candidates)} {lang} candidates.", "llm")
+        qid = trend_stage.wikidata_qid(http, title, lang)
+        titles = trend_stage.sitelinks(http, qid) if qid else {}
+        titles.setdefault(lang, title)
+        return title, qid or "", titles
+    raise PipelineError(f"No Wikipedia article found for '{trend}' in {['en'] + market_langs}.")
+
+
+def provenance(settings: Settings, plant: dict, spec_source: str, trend_source: str) -> list[dict]:
+    m = catalog.manifest()
+    fetched = {s["id"]: s.get("fetched_at", "") for s in m.get("sources", [])}
+    ref = catalog.fad_reference()
+    return [
+        {"input": "Trend interest", "status": "synthetic" if settings.offline else "real_open_data",
+         "detail": trend_source},
+        {"input": "Fad half-life reference", "status": "real_open_data" if ref.get("status") == "computed" else "placeholder",
+         "detail": f"computed {ref.get('computed_on', '-')}" if ref.get("status") == "computed" else "run scripts.build_fad_reference"},
+        {"input": "Ingredients and allergens", "status": "real_open_data",
+         "detail": f"Open Food Facts taxonomy, fetched {fetched.get('off_ingredients_taxonomy', '-')}"},
+        {"input": "Market regulations", "status": "researched_regulation",
+         "detail": "data/markets.yaml; each rule shows its source and verification status"},
+        {"input": "Market size", "status": "real_open_data",
+         "detail": f"World Bank population and GDP, fetched {fetched.get('wb_population', '-')}"},
+        {"input": "Place names", "status": "real_open_data", "detail": "GeoNames cities and ISO country names"},
+        {"input": "Plant, lines and SKUs", "status": plant.get("provenance", "company_input"),
+         "detail": plant.get("company", "")},
+        {"input": "Timeline durations and equipment lead times", "status": catalog.timeline_cfg().get("provenance", "company_input"),
+         "detail": "data/timeline.yaml, data/equipment_catalog.csv"},
+        {"input": "Market scan weights", "status": "company_input", "detail": "data/scoring.yaml"},
+        {"input": "Product spec", "status": spec_source, "detail": "Gemini interprets the trend; code resolves allergens"},
+    ]
 
 
 def run(trend: str, sku_id: str, as_of: dt.date, market: str, image: tuple[bytes, str] | None,
-        llm: LLM, settings: Settings) -> dict:
+        llm: LLM, settings: Settings, plant: dict | None = None, scan: bool = True) -> dict:
     t0 = time.time()
     steps: list[dict] = []
     reg = EvidenceRegistry()
-    plant = catalog.plant()
-    our_sku = plant["our_skus"].get(sku_id)
+    plant = plant or catalog.default_plant()
+    our_sku = plant["skus"].get(sku_id)
     if our_sku is None:
         raise PipelineError(f"Unknown SKU {sku_id}")
+    mcfg = catalog.markets()
+    if market not in mcfg["markets"]:
+        raise PipelineError(f"Unknown market {market}")
+    indicators = catalog.market_indicators()
+    aliases = mcfg.get("language_aliases", {})
+    langs_by_market = {mid: signals.market_languages(m, indicators, aliases) for mid, m in mcfg["markets"].items()}
+    reference = catalog.fad_reference()
 
     def log(name: str, detail: str, kind: str = "code") -> None:
         steps.append({"step": name, "detail": detail, "kind": kind, "t": round(time.time() - t0, 2)})
 
     # 1. Trend Scout ---------------------------------------------------------
-    if settings.mock_llm:
-        title, source = trend, "synthetic_mock_curve"
-        series = _mock_curve(trend, as_of)
-        log("Trend Scout", "MOCK MODE: synthetic pageview curve, not real data.")
+    http = None
+    if settings.offline:
+        title, qid = trend, ""
+        titles = {lg: trend for ls in langs_by_market.values() for lg in ls} | {"en": trend}
+        trend_source = "OFFLINE: synthetic curves for tests, not real data"
+        log("Trend Scout", trend_source)
     else:
-        try:
-            candidates = trend_stage.search_candidates(trend, settings.wiki_user_agent)
-        except Exception as exc:
-            raise PipelineError(f"Wikipedia search failed: {exc}") from exc
-        if not candidates:
-            raise PipelineError(f"No Wikipedia article found for '{trend}'.")
-        title = candidates[0]
-        if len(candidates) > 1:
-            choice = llm.structured("pick_article", prompts.pick_article(trend, candidates), ArticleChoice)
-            title = choice.title if choice.title in candidates else candidates[0]
-            log("Trend Scout", f"Gemini chose '{title}' from {len(candidates)} candidates.", "llm")
-        series = trend_stage.fetch_pageviews(title, as_of - dt.timedelta(days=3 * 365), as_of,
-                                             settings.wiki_user_agent)
-        source = "wikimedia_pageviews"
-    report = trend_stage.analyze(series, as_of, catalog.fad_reference())
-    if report["stage"] == "insufficient_data":
-        raise PipelineError(f"Not enough pageview history for '{title}'.")
-    ev_trend = reg.record(source, title, {"article": title, **report})
-    log("Trend Scout", f"{title}: stage {report['stage']}, momentum {report['momentum_90d']}.")
+        http = trend_stage.Http(settings.wiki_user_agent, settings.cache_dir, settings.http_cache_hours)
+        title, qid, titles = _resolve_article(trend, langs_by_market[market], http, llm, log)
+        trend_source = f"Wikimedia pageviews, {len(titles)} language editions via Wikidata {qid or '(no QID)'}"
+        log("Trend Scout", f"'{title}' ({qid}) exists in {len(titles)} Wikipedia languages.")
+    store = signals.SeriesStore(http, titles, trend, as_of, settings.offline)
+    store.prefetch(sorted({lg for ls in (langs_by_market.values() if scan else [langs_by_market[market]]) for lg in ls} | {"en"}))
+    sig = signals.market_signal(store, langs_by_market[market], reference)
+    if sig["stage"] == "insufficient_data":
+        raise PipelineError(f"Not enough pageview history for '{title}' in {market} or English.")
+    ev_trend = reg.record("wikimedia_pageviews" if not settings.offline else "synthetic_offline_curve",
+                          f"{title} [{market}]", {"article": title, "wikidata": qid, "market": market, **sig})
+    log("Trend Scout", f"{market}: stage {sig['stage']}, momentum {sig['momentum_90d']} "
+                       f"from {sig['languages_used']} ({sig['basis']}).")
 
     # 2. Product Deconstructor ----------------------------------------------
-    amap = catalog.allergen_map()
-    spec = llm.structured("deconstruct", prompts.deconstruct(trend, sorted(amap), STEP_VOCAB), ProductSpec,
+    step_vocab = catalog.process_steps()
+    spec = llm.structured("deconstruct", prompts.deconstruct(trend, step_vocab, catalog.categories()), ProductSpec,
                           image=image, mock_context={"trend": trend})
-    ev_spec = reg.record("gemini_product_spec", trend, spec.model_dump())
+    spec_source = "mock_llm" if settings.mock_llm else "gemini"
+    if settings.mock_llm and "fallback" in spec.notes.lower():
+        spec_source = "mock_fallback"
+    ev_spec = reg.record("gemini_product_spec" if not settings.mock_llm else "mock_product_spec", trend, spec.model_dump())
     log("Product Deconstructor", f"{spec.product_name}: {len(spec.ingredients)} ingredients.", "llm")
 
-    # 3. BOM Morph ------------------------------------------------------------
-    bom = bom_stage.bom_diff(our_sku, spec, amap)
+    # 3. BOM Morph (Open Food Facts taxonomy) -------------------------------
+    resolved = bom_stage.resolve_spec(spec)
+    bom = bom_stage.bom_diff(our_sku, spec, resolved, step_vocab)
     ev_bom = reg.record("bom_diff", sku_id, bom)
-    log("BOM Morph", f"Adds {', '.join(bom['added_ingredients']) or 'nothing'}.")
+    log("BOM Morph", f"Allergens {bom['product_allergens']}; unresolved {bom['unmapped_ingredients'] or 'none'}.")
 
     # 4. Line feasibility + allergen blast radius ---------------------------
     cfg = catalog.timeline_cfg()
-    product_allergens = set(bom["product_allergens"])
-    assessments = [
-        feasibility.assess_line(lid, line, list(spec.process_steps), product_allergens,
-                                catalog.process_map(), catalog.equipment_catalog(),
-                                cfg["in_house"]["allergen_cleaning_validation"])
-        for lid, line in plant["lines"].items()
-    ]
+    claims_cfg = catalog.free_from_claims()
+    pa, pl = set(bom["product_allergens"]), set(bom["product_lineage"])
+    assessments = []
+    for lid, line in plant["lines"].items():
+        a = feasibility.assess_line(lid, line, list(spec.process_steps), pa, pl, catalog.process_map(),
+                                    catalog.equipment_catalog(), cfg["in_house"]["allergen_cleaning_validation"],
+                                    claims_cfg)
+        a["skus_on_line"] = line.get("skus", {})
+        assessments.append(a)
     ranked = feasibility.rank_lines(assessments)
     best = ranked[0]
-    ev_lines = reg.record("plant_yaml", "line assessment",
+    ev_lines = reg.record("plant", "line assessment",
                           {"recommended_line": best["line_id"], "lines": {a["line_id"]: a for a in ranked}})
-    blast = [c for a in assessments for c in a["free_from_conflicts"]]
+    blast = [c | {"line_id": a["line_id"]} for a in assessments for c in a["free_from_conflicts"]]
     log("Line Feasibility", f"Best line {best['line_id']}; {len(blast)} free-from conflicts across lines.")
 
-    # 5. Compliance -------------------------------------------------------------
-    comp = compliance_stage.evaluate(market, bom["product_allergens"], f"{trend} {spec.product_name}",
-                                     best["free_from_conflicts"], catalog.rules())
-    ev_comp = reg.record("rules_csv", market, comp)
-    log("Compliance", f"{len(comp['triggered_rule_ids'])} rules triggered.")
+    # 5. Timeline and launch window -------------------------------------------
+    m = mcfg["markets"][market]
+    needs_l10n = any(lg not in plant.get("base_label_languages", []) for lg in m.get("label_languages", []))
+    hl = sig["reference_half_life_days"]
+    sustained = sig["stage"] == "sustained"
 
-    # 6. Timeline and launch window -------------------------------------------
-    hl = report["reference_half_life_days"]
-    sustained = report["stage"] == "sustained"
+    # Launch deadline from public data alone: works even when the plant data is only a sample
+    deadline = trend_stage.shelf_deadline(hl, as_of, cfg["decision"]["go_capture"],
+                                          cfg["decision"]["conditional_capture"], sustained)
+    ev_deadline = reg.record("shelf_deadline", f"{title} [{market}]", deadline)
+    if sustained:
+        log("Shelf Deadline", "Interest is sustained: no launch deadline from the fad curve.")
+    else:
+        log("Shelf Deadline", f"On shelf within {deadline['go_by_days']['median']} days "
+                              f"(by {deadline['go_by_date']['median']}) to keep {round(deadline['go_share'] * 100)}% of interest.")
 
     def route_eval(route: str, line: dict | None) -> dict:
         tasks = timeline.build_route(route, cfg, line["gap_lead_days"] if line else 0,
-                                     bool(line and line["needs_cleaning_validation"]))
+                                     bool(line and line["needs_cleaning_validation"]), needs_l10n)
         sched = timeline.schedule(tasks)
         cap = {k: (1.0 if sustained else trend_stage.capture_share(sched["total_days"], v)) for k, v in hl.items()}
         return {"route": route, "line": line["line_id"] if line else None, **sched,
@@ -115,6 +167,14 @@ def run(trend: str, sku_id: str, as_of: dt.date, market: str, image: tuple[bytes
     if best["feasible"]:
         routes.append(route_eval("in_house", best))
     routes.append(route_eval("co_manufacturer", None))
+    # The fastest line may be one that would void existing free-from claims. Show it, never choose it.
+    feasible = [a for a in assessments if a["feasible"]]
+    fastest = min(feasible, key=lambda a: a["score"][3], default=None)
+    if fastest and fastest["free_from_conflicts"] and fastest["line_id"] != best["line_id"] \
+            and fastest["score"][3] < best["score"][3]:
+        blocked = route_eval("in_house_blocked", fastest)
+        blocked["blocked_by"] = sorted({f"{c['sku_name']}: {c['claim_label']}" for c in fastest["free_from_conflicts"]})
+        routes.append(blocked)
     route_ids = {r["route"]: reg.record("timeline", r["route"], r) for r in routes}
 
     # Decision (code, not LLM) -------------------------------------------------
@@ -124,30 +184,83 @@ def run(trend: str, sku_id: str, as_of: dt.date, market: str, image: tuple[bytes
     thresholds = cfg["decision"]
     in_house = next((r for r in routes if r["route"] == "in_house"), None)
     co_man = next(r for r in routes if r["route"] == "co_manufacturer")
-    # Prefer our own line (margin, control) unless a co-manufacturer wins clearly on capture.
+    blocked_route = next((r for r in routes if r["route"] == "in_house_blocked"), None)
     margin = thresholds.get("prefer_in_house_within", 0.10)
     if in_house and not hard and co_man["capture"]["median"] - in_house["capture"]["median"] <= margin:
         chosen = in_house
     else:
         chosen = co_man
+    launch = dt.date.fromisoformat(chosen["launch_date"])
+
+    # 6. Compliance for the target market (at the launch date) ---------------
+    product_text = f"{trend} {spec.product_name}"
+    comp = compliance_stage.evaluate(market, mcfg, bom["product_allergens"], bom["product_lineage"], product_text,
+                                     best if chosen["route"] == "in_house" else None, launch,
+                                     plant.get("base_label_languages", []), catalog.place_names())
+    ev_comp = reg.record("markets_yaml", market, comp)
+    log("Compliance", f"{market}: {comp['n_mandatory_declarations']} mandatory declarations, "
+                      f"{len(comp['triggered_rule_ids'])} rules triggered.")
+
     c = chosen["capture"]["median"]
     verdict = "GO" if c >= thresholds["go_capture"] else "CONDITIONAL" if c >= thresholds["conditional_capture"] else "NO-GO"
-    if verdict == "GO" and (hard or bom["unmapped_ingredients"] or report["reference_status"] != "computed"):
+    downgrade = [r for r, on in [
+        ("unresolved ingredients need review", bool(bom["unmapped_ingredients"])),
+        ("some ingredients matched only approximately", bool(bom["approximate_ingredients"])),
+        ("possible allergens flagged for review", bool(bom["allergen_review_flags"])),
+        ("process steps outside the known vocabulary", bool(bom["unknown_process_steps"])),
+        ("half-life reference is a placeholder", sig["reference_status"] != "computed"),
+        ("market interest read from shared English, not the market's own language", sig["basis"] != "own_language"),
+        ("product spec is a mock fallback", spec_source == "mock_fallback"),
+    ] if on]
+    if verdict == "GO" and (hard or downgrade):
         verdict = "CONDITIONAL"
-    decision = {"verdict": verdict, "route": chosen["route"], "line": chosen["line"],
-                "capture_median": c, "hard_failures": hard,
-                "downgrade_reasons": [r for r, on in [
-                    ("unmapped ingredients need review", bool(bom["unmapped_ingredients"])),
-                    ("half-life reference is a placeholder", report["reference_status"] != "computed"),
-                ] if on]}
+    go_days = deadline["go_by_days"]["median"] if deadline["go_by_days"] else None
+    decision = {"verdict": verdict, "market": market, "route": chosen["route"], "line": chosen["line"],
+                "capture_median": c, "hard_failures": hard, "downgrade_reasons": downgrade,
+                "deadline_go_days": go_days,
+                "deadline_go_date": deadline["go_by_date"]["median"] if deadline["go_by_date"] else None,
+                "days_to_shelf": chosen["total_days"],
+                "slack_days": (go_days - chosen["total_days"]) if go_days is not None else None,
+                "faster_line_blocked": ({"line": blocked_route["line"], "total_days": blocked_route["total_days"],
+                                         "blocked_by": blocked_route["blocked_by"]} if blocked_route else None)}
     ev_decision = reg.record("decision_rules", "timeline.yaml thresholds", decision)
     log("Decision", f"{verdict} via {chosen['route']} (capture {c}).")
 
-    # 7. Writer + verifier loop ------------------------------------------------
+    # 7. Market scan ---------------------------------------------------------
+    scan_rows = []
+    if scan:
+        weights = catalog.scoring()["weights"]
+        for mid, mk in mcfg["markets"].items():
+            s = signals.market_signal(store, langs_by_market[mid], reference)
+            cm = compliance_stage.evaluate(mid, mcfg, bom["product_allergens"], bom["product_lineage"], product_text,
+                                           None, launch, plant.get("base_label_languages", []), catalog.place_names())
+            scan_rows.append({
+                "market": mid, "name": mk["name"],
+                "signal": {k: s.get(k) for k in ("stage", "momentum_90d", "current_views_smoothed", "basis",
+                                                 "languages_used", "peak_date")},
+                "indicators": signals.aggregate_indicators(mk, indicators),
+                "mandatory_declarations": [d["label"] for d in cm["declarations"]],
+                "label_languages_needed": cm["label_languages_needed"],
+                "place_name_rule": any(r["trigger_type"] == "place_name_in_product_name" for r in cm["triggered_rules"]),
+                "compliance_burden": cm["n_mandatory_declarations"] + 2 * len(cm["label_languages_needed"]),
+                "deadline_go_days": (None if s.get("stage") in ("sustained", "insufficient_data")
+                                     else trend_stage.days_until_share(cfg["decision"]["go_capture"],
+                                                                       s["reference_half_life_days"]["median"])),
+                "allergen_source_status": mk["allergen_source"]["status"],
+            })
+        scan_rows = signals.score_markets(scan_rows, weights)
+        reg.record("market_scan", "all markets", {"ranking": [{"market": r["market"], "score": r["score"]} for r in scan_rows],
+                                                   "weights": weights})
+        log("Market Scan", "Top markets: " + ", ".join(f"{r['market']} {r['score']}" for r in scan_rows[:3]))
+
+    # 8. Writer + verifier loop ------------------------------------------------
     state = {"trend": trend, "sku": sku_id, "as_of": as_of.isoformat(), "market": market,
+             "market_name": m["name"],
              "evidence_index": {"trend": ev_trend, "spec": ev_spec, "bom": ev_bom, "lines": ev_lines,
-                                "compliance": ev_comp, "decision": ev_decision, **{f"timeline_{k}": v for k, v in route_ids.items()}},
-             "decision": decision}
+                                "compliance": ev_comp, "decision": ev_decision, "deadline": ev_deadline,
+                                **{f"timeline_{k}": v for k, v in route_ids.items()}},
+             "decision": decision,
+             "top_markets": [r["market"] for r in scan_rows[:3]]}
     attempts, feedback, plan, ver = [], None, None, None
     for attempt in range(1, settings.max_writer_attempts + 1):
         plan = llm.structured("write_plan", prompts.write_plan(state, reg.for_prompt(), feedback), Plan,
@@ -165,21 +278,27 @@ def run(trend: str, sku_id: str, as_of: dt.date, market: str, image: tuple[bytes
             break
         feedback = feedback_for_writer(ver)
 
+    mode = "offline" if settings.offline else ("mock_llm" if settings.mock_llm else "live")
     return {
-        "mode": "mock" if settings.mock_llm else "live",
-        "trend": report | {"article": title, "source": source},
+        "mode": mode,
+        "trend": sig | {"article": title, "wikidata": qid, "source": trend_source,
+                        "editions_available": sorted(titles)},
         "spec": spec.model_dump(),
         "bom": bom,
-        "lines": ranked,
+        "lines": [{k: v for k, v in a.items() if k != "skus_on_line"} for a in ranked],
         "allergen_blast_radius": blast,
         "compliance": comp,
         "routes": routes,
+        "shelf_deadline": deadline,
         "decision": decision,
+        "market_scan": scan_rows,
         "plan": plan.model_dump() if plan else None,
         "verification": ver,
         "attempts": attempts,
         "evidence": reg.items,
+        "provenance": provenance(settings, plant, spec_source, trend_source),
         "steps": steps,
         "llm_calls": llm.calls,
         "cache_hits": llm.cache_hits,
+        "http_requests": http.requests if http else 0,
     }

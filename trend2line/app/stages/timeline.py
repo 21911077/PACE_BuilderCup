@@ -35,7 +35,19 @@ def schedule(tasks: dict[str, tuple[int, list[str]]]) -> dict:
     return {"total_days": total, "critical_path": list(reversed(path)), "tasks": rows}
 
 
-def build_route(route: str, cfg: dict, gap_days: int = 0, needs_validation: bool = False) -> dict[str, tuple[int, list[str]]]:
+def build_route(route: str, cfg: dict, gap_days: int = 0, needs_validation: bool = False,
+                localisation: bool = False) -> dict[str, tuple[int, list[str]]]:
+    """Task DAG for a route. `localisation` adds label translation/approval when the market needs a label
+    language the company does not already print; it runs in parallel with artwork and gates ramp-up."""
+    tasks = _route(route, cfg, gap_days, needs_validation)
+    if localisation and cfg.get("label_localisation"):
+        tasks["label_localisation"] = (cfg["label_localisation"], ["trials"])
+        dur, deps = tasks["ramp_up"]
+        tasks["ramp_up"] = (dur, deps + ["label_localisation"])
+    return tasks
+
+
+def _route(route: str, cfg: dict, gap_days: int, needs_validation: bool) -> dict[str, tuple[int, list[str]]]:
     if route == "in_house":
         c = cfg["in_house"]
         ramp_deps = ["label_artwork", "supplier_qualification"]

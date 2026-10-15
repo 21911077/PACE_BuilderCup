@@ -1,16 +1,11 @@
-"""Typed contracts. Models used as Gemini response schemas avoid dict-typed fields."""
+"""Typed contracts. Models used as Gemini response schemas avoid dict-typed fields.
+
+Process steps and categories are plain strings: their vocabulary lives in data/process_map.csv and is passed
+to Gemini in the prompt; code validates the answer and flags anything outside the vocabulary.
+"""
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
-
-ProcessStep = Literal[
-    "tempering", "solid_moulding", "shell_moulding", "filling_deposit", "backing_off",
-    "toasting", "cooling", "demoulding", "wrapping", "enrobing", "mixing",
-    "liquid_filling", "baking", "frying", "other",
-]
-ProductFormat = Literal[
-    "solid_bar", "shell_and_fill", "enrobed_bar", "bite", "beverage", "bakery", "other",
-]
 
 
 class ArticleChoice(BaseModel):
@@ -19,16 +14,19 @@ class ArticleChoice(BaseModel):
 
 
 class SpecIngredient(BaseModel):
-    name: str = Field(description="Ingredient as a person would write it")
-    ingredient_id: str = Field(description="ID from the provided vocabulary, or 'other'")
+    name: str = Field(description="Common English ingredient name, as on an ingredient list")
     role: Literal["shell", "filling", "inclusion", "coating", "base", "topping", "other"] = "other"
+    components: list[str] = Field(default_factory=list,
+                                  description="For compound ingredients only: simple English sub-ingredients")
 
 
 class ProductSpec(BaseModel):
-    product_name: str = Field(description="Descriptive product name")
-    format: ProductFormat
+    product_name: str = Field(description="Descriptive product name, no brands, no place names")
+    category: str = Field(description="One of the given categories")
+    format: str = Field(description="Short format, e.g. solid_bar, shell_and_fill, beverage, bakery, snack")
+    hero_ingredient: str = Field(description="The single ingredient that defines the trend")
     ingredients: list[SpecIngredient]
-    process_steps: list[ProcessStep]
+    process_steps: list[str] = Field(description="Ordered steps, each from the given vocabulary")
     notes: str = ""
 
 

@@ -1,4 +1,5 @@
-# Task durations in days (SYNTHETIC; your domain person should set realistic values).
+# SAMPLE COMPANY INPUT: task durations in days. Replace with your own project history.
+provenance: sample_company_input
 in_house:
   supplier_qualification: 21
   trials: 10
@@ -12,6 +13,8 @@ co_manufacturer:
   label_artwork: 14
   ramp_up: 7
   distribution_fill: 10
+# Added when the target market needs a label language the company does not already print.
+label_localisation: 10
 decision:
   go_capture: 0.5
   conditional_capture: 0.25
